@@ -1,0 +1,42 @@
+name: Daily Job Tracker
+
+on:
+  schedule:
+    # Runs at 6:00 AM UTC = 9:00 AM Finland (EET/EEST)
+    - cron: '57 5 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  track-jobs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create jobs directory
+        run: mkdir -p jobs
+
+      - name: Run job scraper
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: sharmagauravs08@gmail.com
+        run: python scraper.py
+
+      - name: Commit and push results
+        run: |
+          git config user.name "Job Tracker Bot"
+          git config user.email "gauravs08@users.noreply.github.com"
+          git add jobs/
+          DATE=$(date +%Y-%m-%d)
+          git diff --staged --quiet || git commit -m "Jobs report for $DATE"
+          git push
