@@ -9,6 +9,8 @@ import smtplib
 import urllib.request
 import urllib.parse
 import re
+import time
+import random
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -65,14 +67,33 @@ TARGET_COMPANIES = [
 
 
 def fetch_page(url):
-    """Fetch a web page and return its text content."""
+    """Fetch a web page and return its text content. Includes delay to avoid rate limiting."""
+    # Random delay between 3-7 seconds to avoid LinkedIn 429 rate limiting
+    delay = random.uniform(3, 7)
+    time.sleep(delay)
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,fi;q=0.8",
         }
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:
             return resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            print(f"  [WARN] Rate limited on {url}, retrying after 15s...")
+            time.sleep(15)
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except Exception as e2:
+                print(f"  [WARN] Retry also failed for {url}: {e2}")
+                return ""
+        else:
+            print(f"  [WARN] Failed to fetch {url}: {e}")
+            return ""
     except Exception as e:
         print(f"  [WARN] Failed to fetch {url}: {e}")
         return ""
@@ -208,8 +229,12 @@ def send_email(report_md):
     gmail_app_password = os.environ.get("GMAIL_APP_PASSWORD", "")
     recipient = os.environ.get("RECIPIENT_EMAIL", "sharmagauravs08@gmail.com")
 
+    print(f"[DEBUG] GMAIL_USER is {'set' if gmail_user else 'EMPTY'} (length: {len(gmail_user)})")
+    print(f"[DEBUG] GMAIL_APP_PASSWORD is {'set' if gmail_app_password else 'EMPTY'} (length: {len(gmail_app_password)})")
+
     if not gmail_user or not gmail_app_password:
-        print("[SKIP] Email credentials not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD secrets.")
+        print("[SKIP] Email credentials not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD secrets in GitHub repo settings.")
+        print("[SKIP] Go to: Settings > Secrets and variables > Actions > New repository secret")
         return False
 
     # Convert markdown to simple HTML for email
