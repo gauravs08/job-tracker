@@ -114,9 +114,20 @@ def extract_job_count(html):
 
 
 def extract_jobs_from_html(html):
-    """Extract job titles and company names from LinkedIn HTML."""
+    """Extract job titles, company names, locations, and job URLs from LinkedIn HTML."""
     jobs = []
-    # Try to find job cards in the HTML
+
+    # Method 1: Extract from job card links (most reliable for getting URLs)
+    # LinkedIn job cards wrap titles in <a> tags with href to the job page
+    card_pattern = r'<a[^>]*href="(https?://[^"]*linkedin\.com/jobs/view/[^"]*)"[^>]*class="[^"]*base-card__full-link[^"]*"[^>]*>'
+    card_urls = re.findall(card_pattern, html, re.DOTALL)
+
+    # Also try alternate URL patterns
+    if not card_urls:
+        card_pattern2 = r'href="(https?://[^"]*linkedin\.com/jobs/view/[^"]*)"'
+        card_urls = re.findall(card_pattern2, html, re.DOTALL)
+
+    # Extract job details
     title_pattern = r'<(?:h3|span)[^>]*class="[^"]*(?:job-title|base-search-card__title)[^"]*"[^>]*>\s*(.*?)\s*</(?:h3|span)>'
     company_pattern = r'<(?:h4|a)[^>]*class="[^"]*(?:company-name|base-search-card__subtitle)[^"]*"[^>]*>\s*(.*?)\s*</(?:h4|a)>'
     location_pattern = r'<span[^>]*class="[^"]*(?:job-location|job-search-card__location)[^"]*"[^>]*>\s*(.*?)\s*</span>'
@@ -125,16 +136,52 @@ def extract_jobs_from_html(html):
     companies = re.findall(company_pattern, html, re.DOTALL)
     locations = re.findall(location_pattern, html, re.DOTALL)
 
+    # Clean up URLs - remove tracking params
+    clean_urls = []
+    for url in card_urls:
+        clean_url = url.split("?")[0]
+        if clean_url not in clean_urls:
+            clean_urls.append(clean_url)
+
     for i in range(min(len(titles), len(companies))):
         title = re.sub(r'<[^>]+>', '', titles[i]).strip()
         company = re.sub(r'<[^>]+>', '', companies[i]).strip()
         location = re.sub(r'<[^>]+>', '', locations[i]).strip() if i < len(locations) else "Finland"
+        job_url = clean_urls[i] if i < len(clean_urls) else ""
         if title and company:
             jobs.append({
                 "title": title,
                 "company": company,
                 "location": location,
+                "url": job_url,
             })
+
+    # Method 2: If no structured data found, try JSON-LD
+    if not jobs:
+        jsonld_pattern = r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>'
+        jsonld_blocks = re.findall(jsonld_pattern, html, re.DOTALL)
+        for block in jsonld_blocks:
+            try:
+                data = json.loads(block)
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if item.get("@type") == "JobPosting":
+                        title = item.get("title", "")
+                        company = item.get("hiringOrganization", {}).get("name", "")
+                        loc = item.get("jobLocation", {})
+                        if isinstance(loc, list):
+                            loc = loc[0] if loc else {}
+                        location = loc.get("address", {}).get("addressLocality", "Finland") if isinstance(loc, dict) else "Finland"
+                        job_url = item.get("url", "")
+                        if title and company:
+                            jobs.append({
+                                "title": title,
+                                "company": company,
+                                "location": location,
+                                "url": job_url,
+                            })
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                continue
 
     return jobs[:10]  # Limit to top 10 per search
 
@@ -149,36 +196,50 @@ def generate_report():
     ]
 
     all_jobs = []
+    seen_urls = set()  # Deduplicate jobs across searches
 
     for search in SEARCHES:
         report_lines.append(f"## {search['category']}")
         report_lines.append("")
-        report_lines.append("| Search | Job Count | Apply Link |")
-        report_lines.append("|---|---|---|")
 
+        category_jobs = []
         for name, url in search["queries"]:
             print(f"Fetching: {name}...")
             html = fetch_page(url)
-            count = extract_job_count(html)
             jobs = extract_jobs_from_html(html)
-            all_jobs.extend(jobs)
-            report_lines.append(f"| {name} | {count} | [Search on LinkedIn]({url}) |")
+            for job in jobs:
+                job_key = f"{job['company']}|{job['title']}"
+                if job_key not in seen_urls:
+                    seen_urls.add(job_key)
+                    category_jobs.append(job)
+            print(f"  Found {len(jobs)} jobs")
 
+        # Show search links
+        report_lines.append(f"**Search links:** ", )
+        search_links = " | ".join([f"[{name}]({url})" for name, url in search["queries"]])
+        report_lines[-1] = f"**Search links:** {search_links}"
         report_lines.append("")
 
-        # If we found specific jobs, list them
-        category_jobs = extract_jobs_from_html(html) if html else []
+        # List individual jobs with apply links
         if category_jobs:
-            report_lines.append(f"### Recent Listings")
-            report_lines.append("")
-            report_lines.append("| Company | Role | Location |")
-            report_lines.append("|---|---|---|")
-            for job in category_jobs[:5]:
+            report_lines.append("| Company | Role | Location | Apply |")
+            report_lines.append("|---|---|---|---|")
+            for job in category_jobs[:10]:
                 is_target = any(tc.lower() in job["company"].lower() for tc in TARGET_COMPANIES)
-                prefix = "**" if is_target else ""
-                suffix = "**" if is_target else ""
-                report_lines.append(f"| {prefix}{job['company']}{suffix} | {job['title']} | {job['location']} |")
-            report_lines.append("")
+                company_display = f"**{job['company']}**" if is_target else job['company']
+                if job["url"]:
+                    apply_link = f"[Apply]({job['url']})"
+                else:
+                    # Generate a LinkedIn search URL as fallback
+                    search_query = urllib.parse.quote(f"{job['title']} {job['company']}")
+                    fallback_url = f"https://www.linkedin.com/jobs/search/?keywords={search_query}&location=Finland"
+                    apply_link = f"[Search]({fallback_url})"
+                report_lines.append(f"| {company_display} | {job['title']} | {job['location']} | {apply_link} |")
+            all_jobs.extend(category_jobs)
+        else:
+            report_lines.append("*No specific listings scraped. Use search links above to browse.*")
+
+        report_lines.append("")
 
     # Target companies section
     report_lines.extend([
