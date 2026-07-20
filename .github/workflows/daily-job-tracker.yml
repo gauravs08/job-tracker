@@ -1,9 +1,9 @@
 name: Daily Job Tracker
 
 on:
-  schedule:
+  #schedule:
     # Runs at 6:00 AM UTC = 9:00 AM Finland (EET/EEST)
-    - cron: '57 5 * * *'
+   # - cron: '57 5 * * *'
   workflow_dispatch: # Allow manual trigger
 
 permissions:
